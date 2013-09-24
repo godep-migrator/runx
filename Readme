@@ -1,0 +1,7 @@
+runx is heroku run over http
+
+try it:
+
+$ go get github.com/kr/runx
+$ cp $GOPATH/bin/runx /usr/local/lib/hk/plugin
+$ hk runx bash

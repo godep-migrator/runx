@@ -1,0 +1,15 @@
+{
+	"ImportPath": "github.com/kr/runx",
+	"GoVersion": "go version go1.1.2 darwin/amd64",
+	"Deps": [
+		{
+			"ImportPath": "code.google.com/p/go.net/websocket",
+			"Comment": "null-53",
+			"Rev": "05cd37416659"
+		},
+		{
+			"ImportPath": "github.com/kr/pty",
+			"Rev": "27435c699baee43a12e025d8cfde2ee3cbe0ceb6"
+		}
+	]
+}
