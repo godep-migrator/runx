@@ -16,8 +16,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -149,7 +151,19 @@ func connectAndProxy(urlStr string, args, env []string) error {
 			return err
 		}
 		defer RestoreTerm(os.Stdin)
-		// TODO(kr): handle signals
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, os.Signal(syscall.SIGQUIT))
+		go func() {
+			defer RestoreTerm(os.Stdin)
+			for n := range sig {
+				switch n {
+				case os.Interrupt:
+					c.Write([]byte{3})
+				case os.Signal(syscall.SIGQUIT):
+					c.Write([]byte{28})
+				}
+			}
+		}()
 	}
 
 	go io.Copy(c, os.Stdin)
