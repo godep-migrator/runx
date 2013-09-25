@@ -5,25 +5,28 @@ package main
 
 import (
 	"bytes"
+	"code.google.com/p/go.crypto/ssh"
 	"code.google.com/p/go.net/websocket"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
-	"github.com/kr/pty"
 	"io"
 	"io/ioutil"
-	"net/url"
-	//"net/http/httputil"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"os/signal"
-	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
-const Timeout = 10 * time.Second
+const Timeout = 20 * time.Second
 
 const script = `
 echo start;
@@ -34,55 +37,43 @@ echo ready;
 exec /tmp/runxd;
 `
 
-var attached = true
-
 func main() {
 	log.SetFlags(0)
 	maybePrintInfo()
+	maybeProxy()
 	args := os.Args[1:]
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, strings.TrimSpace(help))
-		os.Exit(2)
-	}
-	if args[0] == "-d" {
-		attached = false
-		args = args[1:]
-	}
-
-	if !attached {
-		err := herokuRun(strings.Join(args, " "), nil)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	rows, cols, err := pty.Getsize(os.Stdin)
-	if err != nil {
-		rows, cols = 24, 80
-	}
 	runxURL, err := getToken()
 	if err != nil {
 		log.Fatal(err)
 	}
-	env := map[string]string{
-		"RUNX_URL": runxURL,
+	if len(args) > 0 && args[0] == "-d" {
+		args = args[1:]
+		_, err := herokuRun(strings.Join(args, " "), nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
-	err = herokuRun(script, env)
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		log.Fatal("keygen", err)
+	}
+	pub, err := ssh.NewPublicKey(&key.PublicKey)
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = connectAndProxy(runxURL, args, []string{
-		"LINES=" + strconv.Itoa(rows),
-		"COLUMNS=" + strconv.Itoa(cols),
-		"TERM=" + os.Getenv("TERM"),
+	uuid, err := herokuRun(script, map[string]string{
+		"RUNX_URL":        runxURL,
+		"AUTHORIZED_KEYS": string(ssh.MarshalAuthorizedKey(pub)),
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Fatal(execSSH(runxURL, uuid, key, args))
 }
 
 // Uses hk api to send a ps run request.
-func herokuRun(cmd string, env map[string]string) error {
+func herokuRun(cmd string, env map[string]string) (uuid string, err error) {
 	// as far as the platform is concerned,
 	// the dyno is always detached.
 	params := map[string]interface{}{"command": cmd}
@@ -91,84 +82,54 @@ func herokuRun(cmd string, env map[string]string) error {
 	}
 	b, err := json.Marshal(params)
 	if err != nil {
-		return err
+		return "", err
 	}
 	apiURL := strings.TrimRight(os.Getenv("HEROKU_API_URL"), "/")
 	app := os.Getenv("HKAPP")
 	req, err := http.NewRequest("POST", apiURL+"/apps/"+app+"/dynos", bytes.NewReader(b))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.SetBasicAuth(os.Getenv("HKUSER"), os.Getenv("HKPASS"))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/vnd.heroku+json; version=3")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 201 {
-		return fmt.Errorf("run: unexpected http status: %s", resp.Status)
+		return "", fmt.Errorf("run: unexpected http status: %s", resp.Status)
 	}
-	return nil
+	var info struct{ Id string }
+	err = json.NewDecoder(resp.Body).Decode(&info)
+	return info.Id, err
 }
 
-func connectAndProxy(urlStr string, args, env []string) error {
-	params, err := json.Marshal(struct{ Args, Env []string }{args, env})
+func execSSH(url, uuid string, key *rsa.PrivateKey, args []string) error {
+	f, err := ioutil.TempFile("", "runx")
 	if err != nil {
-		return err
+		return fmt.Errorf("tmpfile: %s", err)
 	}
-
-	urlStr = strings.TrimRight("ws:"+urlStr[6:], "/") + "/run"
-	u, err := url.Parse(urlStr)
-	if err != nil {
-		return err
+	defer f.Close()
+	var b pem.Block
+	b.Type = "RSA PRIVATE KEY"
+	b.Bytes = x509.MarshalPKCS1PrivateKey(key)
+	if err = pem.Encode(f, &b); err != nil {
+		return fmt.Errorf("pem: %s", err)
 	}
-	name := u.User.Username()
-	u.User = nil
-	u.Host += ":80"
-	u.Host = name + ".webxapp.io:80"
-	config, err := websocket.NewConfig(u.String(), u.String())
-	if err != nil {
-		return err
+	f.Seek(0, 0)
+	argv := []string{
+		"ssh",
+		"-i" + f.Name(),
+		"-oProxyCommand=hk runx [proxy]",
+		"-oLocalCommand=rm " + f.Name(),
+		"-oStrictHostKeyChecking=no",
+		"-oUserKnownHostsFile=/dev/null",
+		"dyno@" + uuid,
 	}
-	config.Header.Set("Host", name+".webxapp.io")
-
-	t := time.Now()
-	c, err := websocket.DialConfig(config)
-	for err != nil {
-		time.Sleep(time.Second)
-		c, err = websocket.DialConfig(config)
-		if time.Since(t) > Timeout {
-			log.Fatal("timeout")
-		}
-	}
-	c.Write(params)
-
-	if IsTerminal(os.Stdin) {
-		err := MakeRaw(os.Stdin)
-		if err != nil {
-			return err
-		}
-		defer RestoreTerm(os.Stdin)
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, os.Interrupt, os.Signal(syscall.SIGQUIT))
-		go func() {
-			defer RestoreTerm(os.Stdin)
-			for n := range sig {
-				switch n {
-				case os.Interrupt:
-					c.Write([]byte{3})
-				case os.Signal(syscall.SIGQUIT):
-					c.Write([]byte{28})
-				}
-			}
-		}()
-	}
-
-	go io.Copy(c, os.Stdin)
-	_, err = io.Copy(os.Stdout, c)
-	return err
+	env := append(os.Environ(), "RUNX_URL="+url)
+	return syscall.Exec("/usr/bin/ssh", append(argv, args...), env)
 }
 
 // getToken returns a rendezvous token from the webx api.
@@ -189,6 +150,60 @@ func getToken() (string, error) {
 	return string(b), err
 }
 
+func maybeProxy() {
+	urlStr := os.Getenv("RUNX_URL")
+	if urlStr == "" {
+		return
+	}
+	log.SetPrefix("runx [proxy]: ")
+	defer os.Exit(0)
+	urlStr = strings.TrimRight("ws:"+urlStr[6:], "/") + "/sshd"
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	addr := u.Host + ":80"
+	name := u.User.Username()
+	u.User = nil
+	u.Host = name + ".webxapp.io"
+	config, err := websocket.NewConfig(u.String(), u.String())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	t := time.Now()
+
+	c, err := wsDial(addr, config)
+	for err != nil {
+		time.Sleep(Timeout / 10)
+		c, err = wsDial(addr, config)
+		if time.Since(t) > Timeout {
+			log.Fatal("timeout")
+		}
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go ioCopy(c, os.Stdin, &wg)
+	go ioCopy(os.Stdout, c, &wg)
+	wg.Wait()
+}
+
+func wsDial(addr string, config *websocket.Config) (*websocket.Conn, error) {
+	rwc, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return websocket.NewClient(config, rwc)
+}
+
+func ioCopy(w io.Writer, r io.Reader, wg *sync.WaitGroup) {
+	_, err := io.Copy(w, r)
+	if err != nil {
+		log.Println(err)
+	}
+	wg.Done()
+}
+
 func maybePrintInfo() {
 	if os.Getenv("HKPLUGINMODE") == "info" {
 		fmt.Println(strings.TrimSpace(usage) + "\n\n" + strings.TrimSpace(help))
@@ -202,7 +217,7 @@ runx 0: run a unix command in a dyno
 `
 
 	help = `
-Usage: hk runx [-d] command [arguments]
+Usage: hk runx [-d] [command] [arguments]
 
 Command runx runs a Unix command in a dyno.
 
