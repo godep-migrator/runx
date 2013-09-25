@@ -1,6 +1,9 @@
 {
 	"ImportPath": "github.com/kr/runx",
 	"GoVersion": "go version go1.1.2 darwin/amd64",
+	"Packages": [
+		"./..."
+	],
 	"Deps": [
 		{
 			"ImportPath": "code.google.com/p/go.net/websocket",
@@ -10,6 +13,18 @@
 		{
 			"ImportPath": "github.com/kr/pty",
 			"Rev": "27435c699baee43a12e025d8cfde2ee3cbe0ceb6"
+		},
+		{
+			"ImportPath": "github.com/kr/rspdy",
+			"Rev": "a26310e35b26c39a2384ee16e5cdbdc904765806"
+		},
+		{
+			"ImportPath": "github.com/kr/spdy",
+			"Rev": "b6b3b6ca43a79eafe2fb96a44066e27768457928"
+		},
+		{
+			"ImportPath": "github.com/kr/webx",
+			"Rev": "701ed45fd6fd80de7f4baa54cd9654595666a8f1"
 		}
 	]
 }

@@ -9,7 +9,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"github.com/kr/pty"
-	"github.com/kr/rspdy"
+	"github.com/kr/webx"
 	"io"
 	"log"
 	"net"
@@ -18,13 +18,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
-)
-
-const (
-	redialPause = 2 * time.Second
 )
 
 var tlsConfig = &tls.Config{
@@ -37,23 +32,6 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("runxd: ")
 	log.Println("starting")
-	routerURL, err := url.Parse(os.Getenv("RUNX_URL"))
-	if err != nil {
-		log.Fatal("parse url:", err)
-	}
-	mustSanityCheckURL(routerURL)
-
-	handshake := func(w http.ResponseWriter, r *http.Request) {
-		webxName := routerURL.User.Username()
-		password, _ := routerURL.User.Password()
-		cmd := BackendCommand{"add", webxName, password}
-		err = json.NewEncoder(w).Encode(cmd)
-		if err != nil {
-			log.Fatal("handshake:", err)
-		}
-		log.Println("handshake complete")
-		select {}
-	}
 
 	innerAddr := "localhost:" + os.Getenv("PORT")
 	innerURL, err := url.Parse("http://" + innerAddr)
@@ -65,33 +43,10 @@ func main() {
 	rp.Transport = new(WebsocketTransport)
 	http.Handle("/", rp)
 	http.Handle("/run", OnceHandler{websocket.Handler(Run)})
-	http.HandleFunc("backend.webx.io/names", handshake)
-	addr := routerURL.Host
-	if p := strings.LastIndex(addr, ":"); p == -1 {
-		addr += ":https"
-	}
 	go func() {
 		log.Fatal(http.ListenAndServe(innerAddr, nil))
 	}()
-	for {
-		log.Println("dialing")
-		err = rspdy.DialAndServeTLS("tcp", addr, tlsConfig, nil)
-		if err != nil {
-			log.Println("DialAndServe:", err)
-			time.Sleep(redialPause)
-		}
-	}
-}
-
-func Catchall(w http.ResponseWriter, r *http.Request) {
-	log.Println("catchall 404")
-	dump, err := httputil.DumpRequest(r, false)
-	if err != nil {
-		log.Println(err)
-	} else {
-		os.Stdout.Write(dump)
-	}
-	http.NotFound(w, r)
+	log.Fatal(webx.DialAndServeTLS(os.Getenv("RUNX_URL"), tlsConfig, nil))
 }
 
 type OnceHandler struct {
@@ -138,30 +93,6 @@ func Run(ws *websocket.Conn) {
 		log.Println(err)
 	}
 	wg.Wait()
-}
-
-func mustSanityCheckURL(u *url.URL) {
-	if u.User == nil {
-		log.Fatal("url has no userinfo")
-	}
-	if u.Scheme != "https" {
-		log.Fatal("scheme must be https")
-	}
-	if u.Path != "/" {
-		log.Fatal("path must be /")
-	}
-	if u.RawQuery != "" {
-		log.Fatal("query must be empty")
-	}
-	if u.Fragment != "" {
-		log.Fatal("fragment must be empty")
-	}
-}
-
-type BackendCommand struct {
-	Op       string // "add" or "remove"
-	Name     string // e.g. "foo" for foo.webxapp.io
-	Password string
 }
 
 type WebsocketTransport struct{}
