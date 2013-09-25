@@ -64,6 +64,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	env := map[string]string{
 		"RUNX_URL": runxURL,
 	}
@@ -71,14 +72,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = connectAndProxy(runxURL, args, []string{
-		"LINES=" + strconv.Itoa(rows),
-		"COLUMNS=" + strconv.Itoa(cols),
-		"TERM=" + os.Getenv("TERM"),
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
+	log.Fatal(execSSH(runxURL, args))
 }
 
 // Uses hk api to send a ps run request.
@@ -113,62 +107,15 @@ func herokuRun(cmd string, env map[string]string) error {
 	return nil
 }
 
-func connectAndProxy(urlStr string, args, env []string) error {
-	params, err := json.Marshal(struct{ Args, Env []string }{args, env})
-	if err != nil {
-		return err
+func execSSH(url string, args []string) error {
+	argv := []string{
+		"ssh",
+		"-oProxyCommand=#{rendezvous} #{hostname}",
+		"-oStrictHostKeyChecking=no",
+		"-oUserKnownHostsFile=/dev/null",
+		"dyno@#{hostname}",
 	}
-
-	urlStr = strings.TrimRight("ws:"+urlStr[6:], "/") + "/run"
-	u, err := url.Parse(urlStr)
-	if err != nil {
-		return err
-	}
-	name := u.User.Username()
-	u.User = nil
-	u.Host += ":80"
-	u.Host = name + ".webxapp.io:80"
-	config, err := websocket.NewConfig(u.String(), u.String())
-	if err != nil {
-		return err
-	}
-	config.Header.Set("Host", name+".webxapp.io")
-
-	t := time.Now()
-	c, err := websocket.DialConfig(config)
-	for err != nil {
-		time.Sleep(time.Second)
-		c, err = websocket.DialConfig(config)
-		if time.Since(t) > Timeout {
-			log.Fatal("timeout")
-		}
-	}
-	c.Write(params)
-
-	if IsTerminal(os.Stdin) {
-		err := MakeRaw(os.Stdin)
-		if err != nil {
-			return err
-		}
-		defer RestoreTerm(os.Stdin)
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, os.Interrupt, os.Signal(syscall.SIGQUIT))
-		go func() {
-			defer RestoreTerm(os.Stdin)
-			for n := range sig {
-				switch n {
-				case os.Interrupt:
-					c.Write([]byte{3})
-				case os.Signal(syscall.SIGQUIT):
-					c.Write([]byte{28})
-				}
-			}
-		}()
-	}
-
-	go io.Copy(c, os.Stdin)
-	_, err = io.Copy(os.Stdout, c)
-	return err
+	return syscall.Exec("/usr/bin/ssh", append(argv, args), nil)
 }
 
 // getToken returns a rendezvous token from the webx api.
