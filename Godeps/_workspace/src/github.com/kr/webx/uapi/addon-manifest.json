@@ -1,0 +1,15 @@
+{
+  "id": "webx",
+  "api": {
+    "config_vars": [ "WEBX_URL" ],
+    "regions": [ "us" ],
+    "production": {
+      "base_url": "https://webx.herokuapp.com/heroku/resources",
+      "sso_url": "https://webx.herokuapp.com/sso/login"
+    },
+    "test": {
+      "base_url": "http://localhost:8080/heroku/resources",
+      "sso_url": "http://localhost:8080/sso/login"
+    }
+  }
+}

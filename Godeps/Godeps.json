@@ -8,12 +8,12 @@
 		{
 			"ImportPath": "code.google.com/p/go.crypto/ssh",
 			"Comment": "null-165",
-			"Rev": "ca17ccb492a0"
+			"Rev": "ca17ccb492a099cc7aeac35a4771fb9e20e05b03"
 		},
 		{
 			"ImportPath": "code.google.com/p/go.net/websocket",
 			"Comment": "null-53",
-			"Rev": "05cd37416659"
+			"Rev": "05cd37416659358d7d28bc62b0f2181ead0214ad"
 		},
 		{
 			"ImportPath": "github.com/kr/rspdy",
